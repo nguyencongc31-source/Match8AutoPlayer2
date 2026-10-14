@@ -1,0 +1,967 @@
+workflows:
+  match8-android-apk:
+    name: Match8 AutoPlayer All-In-One APK
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      java: 17
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: 'main'
+          include: true
+          source: true
+    scripts:
+      - name: Tự động tạo toàn bộ cấu trúc dự án Android từ 1 file duy nhất
+        script: |
+          echo "Đang khởi tạo cây thư mục dự án..."
+          mkdir -p app/src/main/java/com/example/match8
+          mkdir -p app/src/main/res/xml
+
+          cat << 'EOF' > settings.gradle.kts
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "Match8AutoPlayer"
+          include(":app")
+          EOF
+
+          cat << 'EOF' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.7.3" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+          }
+          EOF
+
+          cat << 'EOF' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF
+
+          cat << 'EOF' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.example.match8"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.example.match8"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 16
+                  versionName = "16.0-PRO"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+              implementation("com.google.android.material:material:1.12.0")
+          }
+          EOF
+
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="com.example.match8">
+
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+
+              <application
+                  android:allowBackup="true"
+                  android:label="Match8 AutoBot"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.AppCompat.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".ScreenCaptureService"
+                      android:enabled="true"
+                      android:exported="false"
+                      android:foregroundServiceType="mediaProjection" />
+
+                  <service
+                      android:name=".MatchAccessibilityService"
+                      android:exported="true"
+                      android:label="Match8 Auto Tapper"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_service_config" />
+                  </service>
+
+              </application>
+          </manifest>
+          EOF
+
+          cat << 'EOF' > app/src/main/res/xml/accessibility_service_config.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeAllMask"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagDefault"
+              android:canPerformGestures="true"
+              android:notificationTimeout="100" />
+          EOF
+
+          cat << 'EOF' > app/src/main/java/com/example/match8/Match8AutoPlayerComplete.kt
+          package com.example.match8
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.app.Activity
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.graphics.Bitmap
+          import android.graphics.Color
+          import android.graphics.Path
+          import android.graphics.PixelFormat
+          import android.hardware.display.DisplayManager
+          import android.hardware.display.VirtualDisplay
+          import android.media.Image
+          import android.media.ImageReader
+          import android.media.projection.MediaProjection
+          import android.media.projection.MediaProjectionManager
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.IBinder
+          import android.os.Looper
+          import android.os.SystemClock
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.view.accessibility.AccessibilityEvent
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
+          import java.nio.ByteBuffer
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
+          import java.util.concurrent.CopyOnWriteArrayList
+          import java.util.concurrent.Executors
+          import java.util.concurrent.atomic.AtomicBoolean
+          import java.util.concurrent.atomic.AtomicInteger
+          import kotlin.math.abs
+          import kotlin.math.sqrt
+
+          object BoardConfig {
+              val COL_X = floatArrayOf(0.217f, 0.401f, 0.587f, 0.774f)
+              val ROW_Y = floatArrayOf(0.449f, 0.531f, 0.614f, 0.696f)
+              const val SAMPLE_HALF_WIDTH_FRAC = 0.052f
+              const val TAP_DURATION_MS = 45L
+              const val INTER_TAP_DELAY_MS = 115L
+              const val INTER_PAIR_DELAY_MS = 145L
+          }
+
+          object DiagnosticLogger {
+              private val logs = CopyOnWriteArrayList<String>()
+              private val formatter = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+
+              fun log(tag: String, message: String) {
+                  val time = formatter.format(Date())
+                  val entry = "[$time] $tag: $message"
+                  logs.add(entry)
+                  if (logs.size > 250) {
+                      logs.removeAt(0)
+                  }
+                  android.util.Log.d("Match8Auto", entry)
+              }
+
+              fun dumpText(): String {
+                  if (logs.isEmpty()) return "Chưa có dữ liệu chẩn đoán."
+                  return logs.joinToString("\n")
+              }
+          }
+
+          data class CardPair(
+              val firstIndex: Int,
+              val secondIndex: Int,
+              val distance: Float
+          )
+
+          class CellSignature(
+              val luma: FloatArray,
+              val chromaR: FloatArray,
+              val chromaB: FloatArray,
+              val edge: FloatArray,
+              val colorStdDev: Float,
+              val meanR: Float,
+              val meanG: Float,
+              val meanB: Float
+          )
+
+          object RobustCardMatcher {
+              private const val PATCH_SIZE = 24
+
+              fun extractAllSignatures(screenBitmap: Bitmap): List<CellSignature> {
+                  val w = screenBitmap.width
+                  val h = screenBitmap.height
+                  val halfBox = (w * BoardConfig.SAMPLE_HALF_WIDTH_FRAC).toInt().coerceAtLeast(12)
+                  val signatures = ArrayList<CellSignature>(16)
+
+                  for (r in 0 until 4) {
+                      for (c in 0 until 4) {
+                          val cx = (BoardConfig.COL_X[c] * w).toInt()
+                          val cy = (BoardConfig.ROW_Y[r] * h).toInt()
+                          val left = (cx - halfBox).coerceIn(0, w - 2)
+                          val top = (cy - halfBox).coerceIn(0, h - 2)
+                          val right = (cx + halfBox).coerceIn(left + 1, w)
+                          val bottom = (cy + halfBox).coerceIn(top + 1, h)
+
+                          val crop = Bitmap.createBitmap(screenBitmap, left, top, right - left, bottom - top)
+                          val scaled = Bitmap.createScaledBitmap(crop, PATCH_SIZE, PATCH_SIZE, true)
+                          signatures.add(computeSignature(scaled))
+                          if (scaled !== crop) scaled.recycle()
+                          crop.recycle()
+                      }
+                  }
+                  return signatures
+              }
+
+              fun isBoardFaceUp(sigs: List<CellSignature>): Boolean {
+                  if (sigs.size != 16) return false
+                  var activeCells = 0
+                  for (s in sigs) {
+                      if (s.colorStdDev > 22.0f) activeCells++
+                  }
+                  return activeCells >= 14 && !isBoardUniformFaceDown(sigs)
+              }
+
+              fun isBoardUniformFaceDown(sigs: List<CellSignature>): Boolean {
+                  if (sigs.size != 16) return false
+                  val avgR = sigs.map { it.meanR }.average().toFloat()
+                  val avgG = sigs.map { it.meanG }.average().toFloat()
+                  val avgB = sigs.map { it.meanB }.average().toFloat()
+
+                  var maxDeviation = 0f
+                  for (s in sigs) {
+                      val dev = abs(s.meanR - avgR) + abs(s.meanG - avgG) + abs(s.meanB - avgB)
+                      if (dev > maxDeviation) maxDeviation = dev
+                  }
+                  return maxDeviation < 28.0f
+              }
+
+              fun findOptimalPairs(sigs: List<CellSignature>): List<CardPair>? {
+                  if (sigs.size != 16) return null
+
+                  val distMatrix = Array(16) { FloatArray(16) }
+                  for (i in 0 until 16) {
+                      for (j in i + 1 until 16) {
+                          val d = computeAlignedDistance(sigs[i], sigs[j])
+                          distMatrix[i][j] = d
+                          distMatrix[j][i] = d
+                      }
+                  }
+
+                  val bestPairs = IntArray(16)
+                  val currentPairs = IntArray(16)
+                  var bestTotalCost = Float.MAX_VALUE
+
+                  fun search(mask: Int, depth: Int, costSoFar: Float) {
+                      if (costSoFar >= bestTotalCost) return
+                      if (mask == 0xFFFF) {
+                          bestTotalCost = costSoFar
+                          System.arraycopy(currentPairs, 0, bestPairs, 0, 16)
+                          return
+                      }
+
+                      var first = 0
+                      while ((mask and (1 shl first)) != 0) first++
+
+                      val candidates = (first + 1 until 16)
+                          .filter { (mask and (1 shl it)) == 0 }
+                          .sortedBy { distMatrix[first][it] }
+
+                      for (second in candidates) {
+                          currentPairs[depth * 2] = first
+                          currentPairs[depth * 2 + 1] = second
+                          val newMask = mask or (1 shl first) or (1 shl second)
+                          search(newMask, depth + 1, costSoFar + distMatrix[first][second])
+                      }
+                  }
+
+                  search(0, 0, 0f)
+                  if (bestTotalCost == Float.MAX_VALUE) return null
+
+                  val result = ArrayList<CardPair>(8)
+                  for (k in 0 until 8) {
+                      val a = bestPairs[k * 2]
+                      val b = bestPairs[k * 2 + 1]
+                      result.add(CardPair(a, b, distMatrix[a][b]))
+                  }
+                  return result
+              }
+
+              private fun computeSignature(bmp: Bitmap): CellSignature {
+                  val n = PATCH_SIZE * PATCH_SIZE
+                  val pixels = IntArray(n)
+                  bmp.getPixels(pixels, 0, PATCH_SIZE, 0, 0, PATCH_SIZE, PATCH_SIZE)
+
+                  val luma = FloatArray(n)
+                  val chromaR = FloatArray(n)
+                  val chromaB = FloatArray(n)
+                  val edge = FloatArray(n)
+
+                  var sumR = 0f
+                  var sumG = 0f
+                  var sumB = 0f
+                  var sumL = 0f
+
+                  for (i in 0 until n) {
+                      val p = pixels[i]
+                      val r = Color.red(p).toFloat()
+                      val g = Color.green(p).toFloat()
+                      val b = Color.blue(p).toFloat()
+                      sumR += r
+                      sumG += g
+                      sumB += b
+
+                      val y = 0.299f * r + 0.587f * g + 0.114f * b
+                      luma[i] = y
+                      chromaR[i] = r - g
+                      chromaB[i] = b - g
+                      sumL += y
+                  }
+
+                  val meanL = sumL / n
+                  var varL = 0f
+                  for (i in 0 until n) {
+                      val d = luma[i] - meanL
+                      varL += d * d
+                  }
+                  val stdL = sqrt(varL / n).coerceAtLeast(1f)
+
+                  for (i in 0 until n) {
+                      luma[i] = (luma[i] - meanL) / stdL
+                      chromaR[i] = chromaR[i] / 128f
+                      chromaB[i] = chromaB[i] / 128f
+                  }
+
+                  for (y in 1 until PATCH_SIZE - 1) {
+                      for (x in 1 until PATCH_SIZE - 1) {
+                          val gx = luma[y * PATCH_SIZE + (x + 1)] - luma[y * PATCH_SIZE + (x - 1)]
+                          val gy = luma[(y + 1) * PATCH_SIZE + x] - luma[(y - 1) * PATCH_SIZE + x]
+                          edge[y * PATCH_SIZE + x] = sqrt(gx * gx + gy * gy)
+                      }
+                  }
+
+                  return CellSignature(
+                      luma = luma,
+                      chromaR = chromaR,
+                      chromaB = chromaB,
+                      edge = edge,
+                      colorStdDev = stdL,
+                      meanR = sumR / n,
+                      meanG = sumG / n,
+                      meanB = sumB / n
+                  )
+              }
+
+              private fun computeAlignedDistance(a: CellSignature, b: CellSignature): Float {
+                  var minCost = Float.MAX_VALUE
+                  for (dy in -1..1) {
+                      for (dx in -1..1) {
+                          var sum = 0f
+                          var count = 0
+                          for (y in 2 until PATCH_SIZE - 2) {
+                              val ny = y + dy
+                              for (x in 2 until PATCH_SIZE - 2) {
+                                  val nx = x + dx
+                                  val idxA = y * PATCH_SIZE + x
+                                  val idxB = ny * PATCH_SIZE + nx
+
+                                  val dL = abs(a.luma[idxA] - b.luma[idxB])
+                                  val dCr = abs(a.chromaR[idxA] - b.chromaR[idxB])
+                                  val dCb = abs(a.chromaB[idxA] - b.chromaB[idxB])
+                                  val dE = abs(a.edge[idxA] - b.edge[idxB])
+
+                                  sum += 0.35f * dL + 0.25f * dCr + 0.25f * dCb + 0.15f * dE
+                                  count++
+                              }
+                          }
+                          val avg = sum / count
+                          if (avg < minCost) minCost = avg
+                      }
+                  }
+                  return minCost
+              }
+          }
+
+          class ScreenCaptureService : Service() {
+
+              enum class BotPhase {
+                  IDLE,
+                  WAITING_FOR_PREVIEW_OPEN,
+                  WAITING_FOR_BOARD_CLOSE,
+                  DISPATCHING_TAPS
+              }
+
+              companion object {
+                  const val ACTION_START_CAPTURE = "com.example.match8.START_CAPTURE"
+                  const val ACTION_STOP_CAPTURE = "com.example.match8.STOP_CAPTURE"
+                  const val EXTRA_RESULT_CODE = "result_code"
+                  const val EXTRA_RESULT_DATA = "result_data"
+
+                  @Volatile
+                  var currentPhase: BotPhase = BotPhase.IDLE
+                      private set
+
+                  val sessionToken = AtomicInteger(0)
+              }
+
+              private var mediaProjection: MediaProjection? = null
+              private var virtualDisplay: VirtualDisplay? = null
+              private var imageReader: ImageReader? = null
+              private val workerExecutor = Executors.newSingleThreadExecutor()
+              private val isProcessingFrame = AtomicBoolean(false)
+
+              private var screenWidth = 0
+              private var screenHeight = 0
+              private var screenDensity = 0
+
+              private var consecutiveFaceUpFrames = 0
+              private var consecutiveFaceDownFrames = 0
+              private var recognizedPairs: List<CardPair>? = null
+              private var recognizedTimestampMs = 0L
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+                  startInForeground()
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  when (intent?.action) {
+                      ACTION_START_CAPTURE -> {
+                          val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
+                          val resultData: Intent? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                              intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
+                          } else {
+                              @Suppress("DEPRECATION")
+                              intent.getParcelableExtra(EXTRA_RESULT_DATA)
+                          }
+
+                          if (resultCode == Activity.RESULT_OK && resultData != null) {
+                              val token = sessionToken.incrementAndGet()
+                              startProjection(resultCode, resultData, token)
+                          } else {
+                              DiagnosticLogger.log("ERROR", "MediaProjection thiếu quyền.")
+                          }
+                      }
+                      ACTION_STOP_CAPTURE -> {
+                          stopSelfSafely()
+                      }
+                  }
+                  return START_NOT_STICKY
+              }
+
+              private fun startProjection(resultCode: Int, data: Intent, token: Int) {
+                  stopProjectionResources()
+
+                  val metrics = resources.displayMetrics
+                  screenWidth = metrics.widthPixels
+                  screenHeight = metrics.heightPixels
+                  screenDensity = metrics.densityDpi
+
+                  val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                  mediaProjection = mpManager.getMediaProjection(resultCode, data)
+
+                  imageReader = ImageReader.newInstance(
+                      screenWidth,
+                      screenHeight,
+                      PixelFormat.RGBA_8888,
+                      2
+                  )
+
+                  virtualDisplay = mediaProjection?.createVirtualDisplay(
+                      "Match8AutoDisplay",
+                      screenWidth,
+                      screenHeight,
+                      screenDensity,
+                      DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                      imageReader?.surface,
+                      null,
+                      null
+                  )
+
+                  consecutiveFaceUpFrames = 0
+                  consecutiveFaceDownFrames = 0
+                  recognizedPairs = null
+                  currentPhase = BotPhase.WAITING_FOR_PREVIEW_OPEN
+
+                  DiagnosticLogger.log(
+                      "AUTO_ARMED",
+                      "Đã bật tự động (${screenWidth}x${screenHeight}). Hãy vào game và bấm START!"
+                  )
+
+                  imageReader?.setOnImageAvailableListener({ reader ->
+                      if (sessionToken.get() != token) return@setOnImageAvailableListener
+                      val image = try {
+                          reader.acquireLatestImage()
+                      } catch (e: Exception) {
+                          null
+                      } ?: return@setOnImageAvailableListener
+
+                      if (!isProcessingFrame.compareAndSet(false, true)) {
+                          image.close()
+                          return@setOnImageAvailableListener
+                      }
+
+                      workerExecutor.execute {
+                          try {
+                              processCapturedImage(image, token)
+                          } catch (e: Exception) {
+                              DiagnosticLogger.log("FRAME_ERR", e.message ?: "Lỗi xử lý frame")
+                          } finally {
+                              image.close()
+                              SystemClock.sleep(110)
+                              isProcessingFrame.set(false)
+                          }
+                      }
+                  }, Handler(Looper.getMainLooper()))
+              }
+
+              private fun imageToSoftwareBitmap(image: Image): Bitmap? {
+                  val plane = image.planes.firstOrNull() ?: return null
+                  val buffer: ByteBuffer = plane.buffer
+                  val pixelStride = plane.pixelStride
+                  val rowStride = plane.rowStride
+                  val rowPadding = rowStride - pixelStride * image.width
+
+                  val paddedWidth = image.width + rowPadding / pixelStride
+                  val tempBitmap = Bitmap.createBitmap(paddedWidth, image.height, Bitmap.Config.ARGB_8888)
+                  buffer.rewind()
+                  tempBitmap.copyPixelsFromBuffer(buffer)
+
+                  return if (rowPadding == 0) {
+                      tempBitmap
+                  } else {
+                      val cleanBitmap = Bitmap.createBitmap(tempBitmap, 0, 0, image.width, image.height)
+                      tempBitmap.recycle()
+                      cleanBitmap
+                  }
+              }
+
+              private fun processCapturedImage(image: Image, token: Int) {
+                  if (sessionToken.get() != token) return
+                  val phase = currentPhase
+                  if (phase == BotPhase.IDLE || phase == BotPhase.DISPATCHING_TAPS) return
+
+                  val bitmap = imageToSoftwareBitmap(image) ?: return
+                  try {
+                      val signatures = RobustCardMatcher.extractAllSignatures(bitmap)
+
+                      when (phase) {
+                          BotPhase.WAITING_FOR_PREVIEW_OPEN -> {
+                              if (RobustCardMatcher.isBoardFaceUp(signatures)) {
+                                  consecutiveFaceUpFrames++
+                                  if (consecutiveFaceUpFrames >= 2) {
+                                      val pairs = RobustCardMatcher.findOptimalPairs(signatures)
+                                      if (pairs != null && pairs.size == 8) {
+                                          recognizedPairs = pairs
+                                          recognizedTimestampMs = SystemClock.elapsedRealtime()
+                                          consecutiveFaceDownFrames = 0
+                                          currentPhase = BotPhase.WAITING_FOR_BOARD_CLOSE
+
+                                          val summary = pairs.joinToString(" ") { "(${it.firstIndex}-${it.secondIndex})" }
+                                          DiagnosticLogger.log("RECOGNITION_OK", "Đã giải 8 cặp: $summary")
+                                      }
+                                  }
+                              } else {
+                                  consecutiveFaceUpFrames = 0
+                              }
+                          }
+
+                          BotPhase.WAITING_FOR_BOARD_CLOSE -> {
+                              val elapsedSinceRecognition = SystemClock.elapsedRealtime() - recognizedTimestampMs
+                              if (elapsedSinceRecognition < 250L) return
+
+                              if (RobustCardMatcher.isBoardUniformFaceDown(signatures)) {
+                                  consecutiveFaceDownFrames++
+                                  if (consecutiveFaceDownFrames >= 2) {
+                                      val pairsToTap = recognizedPairs ?: return
+                                      currentPhase = BotPhase.DISPATCHING_TAPS
+                                      DiagnosticLogger.log(
+                                          "BOARD_CLOSED",
+                                          "Xác nhận bàn cờ đã úp -> Khởi chạy chuỗi chạm!"
+                                      )
+
+                                      Handler(Looper.getMainLooper()).postDelayed({
+                                          if (sessionToken.get() == token) {
+                                              MatchAccessibilityService.instance?.executePairPlan(
+                                                  pairs = pairsToTap,
+                                                  screenWidth = screenWidth,
+                                                  screenHeight = screenHeight,
+                                                  token = token,
+                                                  onFinished = {
+                                                      if (sessionToken.get() == token) {
+                                                          consecutiveFaceUpFrames = 0
+                                                          consecutiveFaceDownFrames = 0
+                                                          currentPhase = BotPhase.WAITING_FOR_PREVIEW_OPEN
+                                                          DiagnosticLogger.log("READY_NEXT", "Hoàn tất ván! Đang chờ ván mới...")
+                                                      }
+                                                  }
+                                              ) ?: DiagnosticLogger.log("ERR", "AccessibilityService chưa bật!")
+                                          }
+                                      }, 260L)
+                                  }
+                              } else {
+                                  consecutiveFaceDownFrames = 0
+                              }
+                          }
+
+                          else -> {}
+                      }
+                  } finally {
+                      bitmap.recycle()
+                  }
+              }
+
+              private fun startInForeground() {
+                  val channelId = "match8_capture_channel"
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val channel = NotificationChannel(
+                          channelId,
+                          "Match8 Auto Capture",
+                          NotificationManager.IMPORTANCE_LOW
+                      )
+                      val nm = getSystemService(NotificationManager::class.java)
+                      nm.createNotificationChannel(channel)
+                  }
+
+                  val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      Notification.Builder(this, channelId)
+                          .setContentTitle("Match-8 AutoBot đang chạy")
+                          .setContentText("Đang quan sát bàn cờ 4x4...")
+                          .setSmallIcon(android.R.drawable.ic_media_play)
+                          .build()
+                  } else {
+                      @Suppress("DEPRECATION")
+                      Notification.Builder(this)
+                          .setContentTitle("Match-8 AutoBot đang chạy")
+                          .setSmallIcon(android.R.drawable.ic_media_play)
+                          .build()
+                  }
+
+                  startForeground(1001, notification)
+              }
+
+              private fun stopProjectionResources() {
+                  try {
+                      imageReader?.setOnImageAvailableListener(null, null)
+                      virtualDisplay?.release()
+                      imageReader?.close()
+                      mediaProjection?.stop()
+                  } catch (_: Exception) {
+                  }
+                  virtualDisplay = null
+                  imageReader = null
+                  mediaProjection = null
+              }
+
+              private fun stopSelfSafely() {
+                  sessionToken.incrementAndGet()
+                  currentPhase = BotPhase.IDLE
+                  stopProjectionResources()
+                  DiagnosticLogger.log("STOPPED", "Đã dừng dịch vụ chụp màn hình.")
+                  stopForeground(true)
+                  stopSelf()
+              }
+
+              override fun onDestroy() {
+                  stopProjectionResources()
+                  super.onDestroy()
+              }
+          }
+
+          class MatchAccessibilityService : AccessibilityService() {
+
+              companion object {
+                  @Volatile
+                  var instance: MatchAccessibilityService? = null
+                      private set
+              }
+
+              private val mainHandler = Handler(Looper.getMainLooper())
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  instance = this
+                  DiagnosticLogger.log("SERVICE_CONNECTED", "AccessibilityService đã kết nối sẵn sàng.")
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+
+              override fun onInterrupt() {
+                  DiagnosticLogger.log("SERVICE_INTERRUPT", "AccessibilityService bị gián đoạn.")
+              }
+
+              override fun onDestroy() {
+                  if (instance === this) instance = null
+                  super.onDestroy()
+              }
+
+              fun executePairPlan(
+                  pairs: List<CardPair>,
+                  screenWidth: Int,
+                  screenHeight: Int,
+                  token: Int,
+                  onFinished: () -> Unit
+              ) {
+                  val tapCells = ArrayList<Int>(16)
+                  for (p in pairs) {
+                      tapCells.add(p.firstIndex)
+                      tapCells.add(p.secondIndex)
+                  }
+
+                  DiagnosticLogger.log("AUTO_TAP_START", "Bắt đầu chạm ${tapCells.size} ô tuần tự.")
+                  dispatchNextTap(tapCells, 0, screenWidth, screenHeight, token, onFinished)
+              }
+
+              private fun dispatchNextTap(
+                  tapCells: List<Int>,
+                  stepIndex: Int,
+                  screenWidth: Int,
+                  screenHeight: Int,
+                  token: Int,
+                  onFinished: () -> Unit
+              ) {
+                  if (ScreenCaptureService.sessionToken.get() != token) {
+                      DiagnosticLogger.log("TAP_ABORT", "Phiên đã dừng, hủy chuỗi chạm.")
+                      return
+                  }
+
+                  if (stepIndex >= tapCells.size) {
+                      DiagnosticLogger.log("ALL_TAPS_DONE", "Đã hoàn thành toàn bộ 8 cặp chạm!")
+                      onFinished()
+                      return
+                  }
+
+                  val cellIndex = tapCells[stepIndex]
+                  val row = cellIndex / 4
+                  val col = cellIndex % 4
+                  val x = BoardConfig.COL_X[col] * screenWidth
+                  val y = BoardConfig.ROW_Y[row] * screenHeight
+
+                  val path = Path().apply { moveTo(x, y) }
+                  val stroke = GestureDescription.StrokeDescription(path, 0L, BoardConfig.TAP_DURATION_MS)
+                  val gesture = GestureDescription.Builder().addStroke(stroke).build()
+
+                  val accepted = dispatchGesture(gesture, object : GestureResultCallback() {
+                      override fun onCompleted(gestureDescription: GestureDescription?) {
+                          val isSecondCardOfPair = (stepIndex % 2 == 1)
+                          val nextDelay = if (isSecondCardOfPair) {
+                              BoardConfig.INTER_PAIR_DELAY_MS
+                          } else {
+                              BoardConfig.INTER_TAP_DELAY_MS
+                          }
+
+                          mainHandler.postDelayed({
+                              dispatchNextTap(tapCells, stepIndex + 1, screenWidth, screenHeight, token, onFinished)
+                          }, nextDelay)
+                      }
+
+                      override fun onCancelled(gestureDescription: GestureDescription?) {
+                          DiagnosticLogger.log("GESTURE_CANCELLED", "Cử chạm tại ô $cellIndex bị hủy!")
+                      }
+                  }, null)
+
+                  if (!accepted) {
+                      DiagnosticLogger.log("GESTURE_REJECTED", "Hệ thống từ chối cử chạm tại ô $cellIndex")
+                  }
+              }
+          }
+
+          class MainActivity : AppCompatActivity() {
+
+              private lateinit var statusText: TextView
+              private lateinit var logText: TextView
+
+              companion object {
+                  private const val REQ_MEDIA_PROJECTION = 2001
+              }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(40, 48, 40, 48)
+                      setBackgroundColor(Color.parseColor("#0F172A"))
+                  }
+
+                  val title = TextView(this).apply {
+                      text = "MATCH-8 AUTO PLAYER (ALL-IN-ONE)"
+                      textSize = 18f
+                      setTextColor(Color.WHITE)
+                      gravity = Gravity.CENTER
+                      setPadding(0, 0, 0, 24)
+                  }
+                  root.addView(title)
+
+                  statusText = TextView(this).apply {
+                      text = "Trạng thái: Kiểm tra quyền..."
+                      textSize = 14f
+                      setTextColor(Color.parseColor("#38BDF8"))
+                      setPadding(0, 0, 0, 24)
+                  }
+                  root.addView(statusText)
+
+                  val btnAccessibility = Button(this).apply {
+                      text = "1. MỞ CÀI ĐẶT TRỢ NĂNG (ACCESSIBILITY)"
+                      setOnClickListener {
+                          startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                      }
+                  }
+                  root.addView(btnAccessibility)
+
+                  val btnStartAuto = Button(this).apply {
+                      text = "2. START TỰ ĐỘNG (CẤP QUYỀN QUAY MÀN HÌNH)"
+                      setOnClickListener {
+                          requestScreenCapture()
+                      }
+                  }
+                  root.addView(btnStartAuto)
+
+                  val btnStopAuto = Button(this).apply {
+                      text = "3. DỪNG TỰ ĐỘNG (STOP)"
+                      setOnClickListener {
+                          val stopIntent = Intent(this@MainActivity, ScreenCaptureService::class.java).apply {
+                              action = ScreenCaptureService.ACTION_STOP_CAPTURE
+                          }
+                          startService(stopIntent)
+                          refreshDiagnosticUI()
+                      }
+                  }
+                  root.addView(btnStopAuto)
+
+                  val btnRefreshLog = Button(this).apply {
+                      text = "XEM / LÀM MỚI LOG CHẨN ĐOÁN"
+                      setOnClickListener {
+                          refreshDiagnosticUI()
+                      }
+                  }
+                  root.addView(btnRefreshLog)
+
+                  val scrollView = ScrollView(this).apply {
+                      layoutParams = LinearLayout.LayoutParams(
+                          LinearLayout.LayoutParams.MATCH_PARENT,
+                          0,
+                          1f
+                      ).apply { topMargin = 24 }
+                      setBackgroundColor(Color.parseColor("#020617"))
+                  }
+
+                  logText = TextView(this).apply {
+                      textSize = 12f
+                      setTextColor(Color.parseColor("#A7F3D0"))
+                      setPadding(24, 24, 24, 24)
+                      text = DiagnosticLogger.dumpText()
+                  }
+                  scrollView.addView(logText)
+                  root.addView(scrollView)
+
+                  setContentView(root)
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  refreshDiagnosticUI()
+              }
+
+              private fun refreshDiagnosticUI() {
+                  val accReady = MatchAccessibilityService.instance != null
+                  val phase = ScreenCaptureService.currentPhase
+                  statusText.text = "Accessibility: ${if (accReady) "ĐÃ BẬT" else "CHƯA BẬT"} | Phase: $phase"
+                  logText.text = DiagnosticLogger.dumpText()
+              }
+
+              private fun requestScreenCapture() {
+                  if (MatchAccessibilityService.instance == null) {
+                      DiagnosticLogger.log("WARN", "Vui lòng bật Accessibility Service trước khi bấm START TỰ ĐỘNG!")
+                      refreshDiagnosticUI()
+                      return
+                  }
+                  val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                  @Suppress("DEPRECATION")
+                  startActivityForResult(mpManager.createScreenCaptureIntent(), REQ_MEDIA_PROJECTION)
+              }
+
+              @Deprecated("Deprecated in Java")
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+                  if (requestCode == REQ_MEDIA_PROJECTION && resultCode == Activity.RESULT_OK && data != null) {
+                      val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
+                          action = ScreenCaptureService.ACTION_START_CAPTURE
+                          putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
+                          putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
+                      }
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          startForegroundService(serviceIntent)
+                      } else {
+                          startService(serviceIntent)
+                      }
+                      refreshDiagnosticUI()
+                  }
+              }
+          }
+          EOF
+
+          echo "Khởi tạo Gradle Wrapper 8.9 và bắt đầu Build APK..."
+          gradle wrapper --gradle-version 8.9
+          chmod +x ./gradlew
+          ./gradlew assembleDebug --stacktrace
+    artifacts:
+      - app/build/outputs/apk/debug/*.apk
